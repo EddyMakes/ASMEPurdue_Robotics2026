@@ -1,0 +1,21 @@
+#include <Servo.h> //servo library
+Servo esc; //creates servo object named esc
+#define ESC_PIN 9 //variable for which pin
+#define VRY_PIN A0 //joystick y-axis pin
+
+int yValue = 0; //for joystick
+
+void setup() {
+  // put your setup code here, to run once:
+  Serial.begin(9600);
+  esc.attach(ESC_PIN, 1000, 2000); //attaches esc to pin 9 with limits
+}
+
+void loop() {
+  // put your main code here, to run repeatedly:
+  //map joystick input to pwm values and write to controller
+  yValue = analogRead(VRY_PIN);
+  int pwmValue = map(yValue, 0, 1023, 1000, 2000);
+  esc.writeMicroseconds(pwmValue);
+  delay(50);
+}
