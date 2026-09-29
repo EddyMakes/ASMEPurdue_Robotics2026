@@ -1,21 +1,37 @@
 #include <Servo.h> //servo library
-Servo esc; //creates servo object named esc
-#define ESC_PIN 9 //variable for which pin
-#define VRY_PIN A0 //joystick y-axis pin
+Servo esc1; //creates servo object named esc1
+Servo esc2;
+Servo esc3;
+Servo esc4;
+#define ESC1_PIN 9 //variable for which pin
+#define ESC2_PIN 10 //variable for which pin
+#define ESC3_PIN 11 //variable for which pin
+#define ESC4_PIN 12 //variable for which pin
+#define VRY_PIN_RIGHT A0 //joystick y-axis pin
+#define VRY_PIN_LEFT A1 
 
-int yValue = 0; //for joystick
+int yValueRight = 0; //for right joystick
+int yValueLeft = 0; //for left joystick
 
 void setup() {
   // put your setup code here, to run once:
   Serial.begin(9600);
-  esc.attach(ESC_PIN, 1000, 2000); //attaches esc to pin 9 with limits
+  esc1.attach(ESC1_PIN, 1000, 2000); //attaches esc to pin 9 with limits
+  esc2.attach(ESC2_PIN, 1000, 2000); //attaches esc to pin 10 with limits
+  esc3.attach(ESC3_PIN, 1000, 2000); //attaches esc to pin 11 with limits
+  esc4.attach(ESC4_PIN, 1000, 2000); //attaches esc to pin 12 with limits
 }
 
 void loop() {
   // put your main code here, to run repeatedly:
   //map joystick input to pwm values and write to controller
-  yValue = analogRead(VRY_PIN);
-  int pwmValue = map(yValue, 0, 1023, 1000, 2000);
-  esc.writeMicroseconds(pwmValue);
+  yValueRight = analogRead(VRY_PIN_RIGHT);
+  yValueLeft = analogRead(VRY_PIN_LEFT);
+  int pwmValueRight = map(yValueRight, 0, 1023, 1000, 2000);
+  int pwmValueLeft = map(yValueLeft, 0, 1023, 1000, 2000);
+  esc1.writeMicroseconds(pwmValueRight);
+  esc2.writeMicroseconds(pwmValueRight);
+  esc3.writeMicroseconds(pwmValueLeft);
+  esc4.writeMicroseconds(pwmValueLeft);
   delay(50);
 }
