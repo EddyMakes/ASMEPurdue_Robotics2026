@@ -1,0 +1,356 @@
+#include <Arduino.h>
+#include "driver/twai.h"
+
+// ============================================================
+// CAN / SN65HVD230
+// ============================================================
+
+#define CAN_TX_PIN 4
+#define CAN_RX_PIN 5
+
+
+// ============================================================
+// UART TO RASPBERRY PI
+// ============================================================
+//
+// Change these if you are using different GPIOs.
+//
+// ESP32 RX <- Pi TX
+// ESP32 TX -> Pi RX
+//
+
+#define PI_RX_PIN 20
+#define PI_TX_PIN 21
+
+HardwareSerial PiSerial(1);
+
+
+// ============================================================
+// SPARK MAX
+// ============================================================
+
+#define SPARK_MAX_ID 1
+
+
+// ============================================================
+// MOTOR OUTPUT
+// ============================================================
+//
+// This is now controlled by the Raspberry Pi.
+//
+// Range:
+//   -100.0 = full reverse
+//      0.0 = stopped
+//   +100.0 = full forward
+//
+
+float motorPercent = 0.0;
+
+
+// ============================================================
+// CAN SPEED
+// ============================================================
+
+#define CAN_SPEED TWAI_TIMING_CONFIG_1MBITS()
+
+
+// ============================================================
+// SEND CAN FRAME
+// ============================================================
+
+bool sendCAN(
+    uint32_t canID,
+    const uint8_t *data,
+    uint8_t length
+)
+{
+    twai_message_t message = {};
+
+    message.identifier = canID;
+
+    // 29-bit extended CAN frame
+    message.flags = TWAI_MSG_FLAG_EXTD;
+
+    message.data_length_code = length;
+
+    for (uint8_t i = 0; i < length; i++)
+    {
+        message.data[i] = data[i];
+    }
+
+    esp_err_t result = twai_transmit(
+        &message,
+        pdMS_TO_TICKS(100)
+    );
+
+    return result == ESP_OK;
+}
+
+
+// ============================================================
+// SPARK MAX HEARTBEAT
+// ============================================================
+
+void sendHeartbeat()
+{
+    uint8_t data[8] =
+    {
+        0x02,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00
+    };
+
+    sendCAN(
+        0x02052C80,
+        data,
+        8
+    );
+}
+
+
+// ============================================================
+// SET SPARK MAX OUTPUT
+// ============================================================
+
+void setMotorPercent(float percent)
+{
+    // Safety clamp
+
+    if (percent > 100.0)
+        percent = 100.0;
+
+    if (percent < -100.0)
+        percent = -100.0;
+
+
+    // Convert percentage to -1.0 ... +1.0
+
+    float output = percent / 100.0;
+
+
+    // SPARK MAX CAN ID
+
+    uint32_t canID =
+        0x02050080 + SPARK_MAX_ID;
+
+
+    // Build packet
+
+    uint8_t data[8];
+
+
+    // First four bytes = float
+
+    memcpy(
+        &data[0],
+        &output,
+        sizeof(float)
+    );
+
+
+    // Duty-cycle mode
+
+    data[4] = 0x00;
+
+    // Required trailer
+
+    data[5] = 0x00;
+    data[6] = 0x80;
+    data[7] = 0xFD;
+
+
+    // Send
+
+    sendCAN(
+        canID,
+        data,
+        8
+    );
+}
+
+
+// ============================================================
+// CAN INITIALIZATION
+// ============================================================
+
+bool setupCAN()
+{
+    twai_general_config_t generalConfig =
+        TWAI_GENERAL_CONFIG_DEFAULT(
+            (gpio_num_t)CAN_TX_PIN,
+            (gpio_num_t)CAN_RX_PIN,
+            TWAI_MODE_NORMAL
+        );
+
+
+    twai_timing_config_t timingConfig =
+        CAN_SPEED;
+
+
+    twai_filter_config_t filterConfig =
+        TWAI_FILTER_CONFIG_ACCEPT_ALL();
+
+
+    // Install driver
+
+    esp_err_t result =
+        twai_driver_install(
+            &generalConfig,
+            &timingConfig,
+            &filterConfig
+        );
+
+    if (result != ESP_OK)
+    {
+        return false;
+    }
+
+
+    // Start CAN
+
+    result = twai_start();
+
+    if (result != ESP_OK)
+    {
+        return false;
+    }
+
+
+    return true;
+}
+
+
+// ============================================================
+// READ UART FROM RASPBERRY PI
+// ============================================================
+//
+// Expected Pi messages:
+//
+// 10.0
+// 25.5
+// -50.0
+// 0
+//
+// Each message should end with '\n'
+//
+// Example:
+//
+// Pi sends:
+//
+// "25.0\n"
+//
+// ESP32 receives:
+//
+// motorPercent = 25.0
+//
+// ============================================================
+
+void readPiUART()
+{
+    if (PiSerial.available())
+    {
+        char message =
+            PiSerial.read();
+
+
+        Serial.print("Pi sent: ");
+        Serial.println(message);
+
+        if (message.length() == 0)
+            return;
+
+
+        // Convert UART text to float
+
+        float newPercent =
+            message.toFloat();
+
+
+        // Safety limits
+
+        if (newPercent > 100.0)
+            newPercent = 100.0;
+
+        if (newPercent < -100.0)
+            newPercent = -100.0;
+
+
+        // Update motor command
+
+        motorPercent = newPercent;
+    }
+}
+
+
+// ============================================================
+// SETUP
+// ============================================================
+
+void setup()
+{
+    // USB serial to your computer
+    Serial.begin(115200);
+
+    // UART to Raspberry Pi
+    PiSerial.begin(
+        115200,
+        SERIAL_8N1,
+        PI_RX_PIN,
+        PI_TX_PIN
+    );
+
+    setupCAN();
+
+    motorPercent = 0.0;
+
+    setMotorPercent(0.0);
+
+    delay(500);
+
+    Serial.println("ESP32 ready");
+}
+
+
+
+// ============================================================
+// LOOP
+// ============================================================
+
+void loop()
+{
+    // --------------------------------------------------------
+    // 1. Listen for Raspberry Pi
+    // --------------------------------------------------------
+
+    readPiUART();
+
+    // --------------------------------------------------------
+    // 2. Send heartbeat
+    // --------------------------------------------------------
+
+    static unsigned long lastHeartbeat = 0;
+
+    unsigned long now = millis();
+
+
+    if (now - lastHeartbeat >= 20)
+    {
+        sendHeartbeat();
+
+        lastHeartbeat = now;
+    }
+
+
+    // --------------------------------------------------------
+    // 3. Send current motor command
+    // --------------------------------------------------------
+
+    setMotorPercent(motorPercent);
+
+    delay(10);
+}
