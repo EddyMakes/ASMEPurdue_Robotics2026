@@ -1,198 +1,152 @@
 #include <Arduino.h>
-#include <math.h>
 #include "driver/twai.h"
 
-constexpr gpio_num_t CAN_TX_PIN = GPIO_NUM_4;
-constexpr gpio_num_t CAN_RX_PIN = GPIO_NUM_5;
-constexpr uint8_t SPARK_ID = 1;
+constexpr uint8_t MOTOR_ID = 2;
+constexpr float TEST_DUTY = 0.10f;  // 10%
+constexpr uint32_t RUN_MS = 2000;
 
-float motorPercent = 0.0f;
-uint32_t txQueueErrors = 0;
-constexpr uint32_t COMMAND_TIMEOUT_MS = 500;
-uint32_t lastInputMs = 0;
+bool running = false;
+bool faulted = false;
+uint32_t startedAt = 0;
+uint32_t lastSend = 0;
 
-bool sendCAN(uint32_t id, const uint8_t *data, uint8_t length) {
-    if (length > 8) return false;
+void stopOnFault() {
+    running = false;
+    faulted = true;
 
-    twai_message_t message = {};
-    message.identifier = id;
-    message.flags = TWAI_MSG_FLAG_EXTD;
-    message.data_length_code = length;
-    memcpy(message.data, data, length);
+    // Stop transmission so queued commands cannot resume later.
+    // Heartbeats also stop; the controller must time out.
+    twai_stop();
 
-    // Queue without blocking command input.
-    if (twai_transmit(&message, 0) != ESP_OK) {
-        ++txQueueErrors;
-        return false;
-    }
-
-    // Queued does not mean the motor controller acted on it.
-    return true;
-}
-
-void sendHeartbeat() {
-    // Preserve the heartbeat from the user's working motor-control sketch.
-    const uint8_t data[8] = {0x02, 0, 0, 0, 0, 0, 0, 0};
-
-    sendCAN(0x02052C80, data, sizeof(data));
-}
-
-void sendMotorCommand() {
-    float output = motorPercent / 100.0f;
-
-    // Original sketch's CAN command and trailer.
-    uint8_t data[8] = {0, 0, 0, 0, 0, 0, 0x80, 0xFD};
-    memcpy(data, &output, sizeof(output));
-
-    sendCAN(0x02050080 | SPARK_ID, data, sizeof(data));
-}
-
-bool setupCAN() {
-    twai_general_config_t general = TWAI_GENERAL_CONFIG_DEFAULT(
-        CAN_TX_PIN,
-        CAN_RX_PIN,
-        TWAI_MODE_NORMAL
+    Serial.println(
+        "CAN fault: test cancelled. Check wiring/power, then reset ESP."
     );
+}
 
-    twai_timing_config_t timing = TWAI_TIMING_CONFIG_1MBITS();
-    twai_filter_config_t filter = TWAI_FILTER_CONFIG_ACCEPT_ALL();
+bool sendFrame(uint32_t id, const uint8_t *data) {
+    twai_message_t frame = {};
+    frame.identifier = id;
+    frame.extd = 1;
+    frame.data_length_code = 8;
+    memcpy(frame.data, data, 8);
 
-    esp_err_t result = twai_driver_install(
-        &general, &timing, &filter
+    esp_err_t result = twai_transmit(
+        &frame, pdMS_TO_TICKS(10)
     );
-
-    if (result == ESP_OK) {
-        result = twai_start();
-    }
 
     if (result != ESP_OK) {
-        Serial.printf(
-            "CAN initialization failed: %s\n",
-            esp_err_to_name(result)
-        );
+        Serial.printf("CAN send error: %s\n",
+                      esp_err_to_name(result));
+        stopOnFault();
         return false;
     }
 
     return true;
 }
 
-void readSerialCommands() {
-    static char line[64];
-    static size_t used = 0;
-    static bool overflow = false;
+bool sendMotor(float duty) {
+    // Same command format as your existing motor test.
+    uint8_t data[8] = {0, 0, 0, 0, 0, 0, 0x80, 0xFD};
+    memcpy(data, &duty, sizeof(duty));
 
-    // Bound input work so a flood of bytes cannot starve the watchdog.
-    for (int count = 0; count < 128 && Serial.available(); ++count) {
-        char c = Serial.read();
+    return sendFrame(0x02050080UL | MOTOR_ID, data);
+}
 
-        if (c == '\n' || c == '\r') {
-            if (used || overflow) {
-                line[used] = '\0';
-
-                if (!overflow && strcmp(line, "?") == 0) {
-                    Serial.println("XBOX_READY timeout=500");
-                    used = 0;
-                    overflow = false;
-                    continue;
-                }
-
-                int motorNumber = 0;
-                float requested = 0;
-                char extra = 0;
-
-                bool valid =
-                    !overflow &&
-                    sscanf(
-                        line, "%d %f %c",
-                        &motorNumber, &requested, &extra
-                    ) == 2 &&
-                    motorNumber == 1 &&
-                    isfinite(requested) &&
-                    requested >= -100 &&
-                    requested <= 100;
-
-                if (valid) {
-                    lastInputMs = millis();
-                    motorPercent = requested;
-
-                    Serial.printf(
-                        "Requested output: %.1f%%\n",
-                        motorPercent
-                    );
-                } else {
-                    Serial.println(
-                        "Use: 1 <percent>, from -100 to 100."
-                    );
-                }
-            }
-
-            used = 0;
-            overflow = false;
-        } else if (used < sizeof(line) - 1) {
-            line[used++] = c;
-        } else {
-            overflow = true;
-        }
-    }
+bool sendHeartbeat() {
+    // Broadcast enable: connect only the intended test SPARK.
+    const uint8_t data[8] = {
+        255, 255, 255, 255, 255, 255, 255, 255
+    };
+    return sendFrame(0x02052C80UL, data);
 }
 
 void setup() {
     Serial.begin(115200);
     delay(1000);
 
-    if (!setupCAN()) {
-        while (true) {
-            delay(1000);
-        }
+    twai_general_config_t general =
+        TWAI_GENERAL_CONFIG_DEFAULT(
+            GPIO_NUM_4, GPIO_NUM_5, TWAI_MODE_NORMAL
+        );
+
+    twai_timing_config_t timing =
+        TWAI_TIMING_CONFIG_1MBITS();
+
+    twai_filter_config_t filter =
+        TWAI_FILTER_CONFIG_ACCEPT_ALL();
+
+    esp_err_t result =
+        twai_driver_install(&general, &timing, &filter);
+
+    if (result == ESP_OK) {
+        result = twai_start();
     }
 
-    Serial.println("One SPARK MAX: CAN ID 1");
-    Serial.println("Initial requested output: 0%");
-    Serial.println("1 10  = request 10% forward");
-    Serial.println("1 -10 = request 10% reverse");
-    Serial.println("1 0   = request zero output");
-    Serial.println("Command timeout: 500 ms. Repeat commands to maintain output.");
+    if (result != ESP_OK) {
+        faulted = true;
+        Serial.printf("CAN setup failed: %s\n",
+                      esp_err_to_name(result));
+        return;
+    }
+
+    Serial.println("Single motor: SPARK CAN ID 1");
+    Serial.println("g = 10% for 2 seconds; s = stop");
 }
 
 void loop() {
-    readSerialCommands();
+    if (faulted) {
+        delay(10);
+        return;
+    }
+
+    twai_status_info_t status = {};
+    if (twai_get_status_info(&status) != ESP_OK ||
+        status.state != TWAI_STATE_RUNNING ||
+        status.tx_error_counter >= 128 ||
+        status.rx_error_counter >= 128) {
+        stopOnFault();
+        return;
+    }
+
+    // Drain incoming messages.
+    twai_message_t received;
+    for (int i = 0;
+         i < 32 && twai_receive(&received, 0) == ESP_OK;
+         ++i) {
+    }
+
+    // Bounded, nonblocking serial input.
+    for (int i = 0; i < 64 && Serial.available(); ++i) {
+        char c = Serial.read();
+
+        if (c == 'g' && !running) {
+            running = true;
+            startedAt = millis();
+            Serial.println("Starting 10% test.");
+        } else if (c == 's') {
+            running = false;
+            Serial.println("Commanding stop.");
+        }
+    }
 
     uint32_t now = millis();
-    if (now - lastInputMs >= COMMAND_TIMEOUT_MS) {
-        motorPercent = 0.0f;
+
+    if (running && now - startedAt >= RUN_MS) {
+        running = false;
+        Serial.println("Two seconds finished; commanding stop.");
     }
 
-    static uint32_t lastHeartbeat = 0;
-    static uint32_t lastCommand = 0;
-    static uint32_t lastReport = 0;
+    if (now - lastSend >= 20) {
+        lastSend = now;
 
-    if (now - lastHeartbeat >= 20) {
-        lastHeartbeat = now;
-        sendHeartbeat();
-    }
+        if (!sendMotor(running ? TEST_DUTY : 0.0f)) {
+            return;
+        }
 
-    if (now - lastCommand >= 10) {
-        lastCommand = now;
-        sendMotorCommand();
-    }
-
-    // Drain incoming status frames.
-    twai_message_t received;
-    for (
-        int i = 0;
-        i < 16 && twai_receive(&received, 0) == ESP_OK;
-        ++i
-    ) {}
-
-    if (now - lastReport >= 1000) {
-        lastReport = now;
-
-        if (txQueueErrors) {
-            Serial.printf(
-                "CAN transmit queue failures: %lu\n",
-                (unsigned long)txQueueErrors
-            );
-            txQueueErrors = 0;
+        if (running) {
+            if (!sendHeartbeat()) {
+                return;
+            }
         }
     }
 
