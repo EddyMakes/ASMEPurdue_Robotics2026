@@ -4,7 +4,7 @@
 
 constexpr gpio_num_t CAN_TX_PIN = GPIO_NUM_4;
 constexpr gpio_num_t CAN_RX_PIN = GPIO_NUM_5;
-constexpr uint8_t SPARK_IDS[] = {1, 2, 3, 4, 5, 6};
+constexpr uint8_t SPARK_IDS[] = {11, 12, 13, 14, 15, 16};
 // One direction flag per CAN ID, in the same order as SPARK_IDS.
 constexpr bool MOTOR_INVERTED[] = {false, false, false, false, false, false};
 constexpr size_t MOTOR_COUNT = sizeof(SPARK_IDS) / sizeof(SPARK_IDS[0]);
