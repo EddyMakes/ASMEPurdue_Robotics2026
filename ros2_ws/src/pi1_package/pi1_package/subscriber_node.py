@@ -2,36 +2,16 @@ import rclpy
 from rclpy.node import Node
 
 from std_msgs.msg import String
-import serial
-
-class FakeSerial:
-    def write(self, data):
-        print(f'UART TEST - would send: {data.decode("utf-8").strip()}')
-
-    def close(self):
-        pass
-
-    @property
-    def is_open(self):
-        return True
-
 
 class PiSpeedSubscriber(Node):
 
     def __init__(self):
         super().__init__('speed_subscriber')
-        self.serial_port = FakeSerial()
-        """self.serial_port = serial.Serial(
-                port = '/dev/ttyUSB0',
-                baudrate = 115200,
-                timeout = 1
-                )"""
-
         self.subscription = self.create_subscription(
-                String,
-                'motor/vel_cmd',
-                self.listener_callback, #function that's called when message arrives
-                10)
+            String,
+            'motor/vel_cmd',
+            self.listener_callback, #function that's called when message arrives
+            10)
         self.subscription  # prevent unused variable warning
         self.get_logger().info('speed subscriber is running')
 
