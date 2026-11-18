@@ -1,0 +1,12 @@
+MQTT Notes
+
+Mosquitto - free open source mqtt broker for windows and linux
+you can use broker/server or websockets
+we'll write client scripts that send data back and forth, but then there will need to be a launch script that starts all those scripts on boot
+use paho-mqtt library to write client scripts in python (mosquitto has options for C, but paho seems more supported)
+wrote publisher and subscriber test scripts. remember python virtual environment
+"source mqtt-env/bin/activate" in the projects folder
+
+we have working controller reader and subscriber
+there was some trouble with controller discovery because of user groups and module loading. I ran "echo joydev | sudo tee /etc/modules-load.d/joydev.conf" to fix on startup
+single version of that command was "sudo modprobe joydev"
